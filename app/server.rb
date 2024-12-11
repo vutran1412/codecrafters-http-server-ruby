@@ -55,26 +55,45 @@ class FileServer
     end
 
     puts "Request Headers:\n#{headers.join("\n")}"
+
+    content_length = headers.find { |h| h.start_with?("Content-Length:") }&.split(": ", 2)&.last&.to_i
+
+    body = socket.read(content_length) if content_length && content_length > 0
+
     {
       request_line: headers.shift.split(" ", 3),
-      headers: headers
+      headers: headers,
+      body: body
     }
   end
 
   def process_request(socket, request)
     method, path, _http_version = request[:request_line]
 
-    case path
-    when "/"
-      send_response(socket, 200, "Welcome to the File Server!")
-    when %r{^/files/(.+)}
-      serve_file(socket, Regexp.last_match(1))
-    when %r{^/echo/(.+)}
-      send_response(socket, 200, Regexp.last_match(1))
-    when "/user-agent"
-      handle_user_agent(socket, request[:headers])
+    case method
+    when "GET"
+      case path
+      when "/"
+        send_response(socket, 200, "Welcome to the File Server!")
+      when %r{^/files/(.+)}
+        serve_file(socket, Regexp.last_match(1))
+      when %r{^/echo/(.+)}
+        send_response(socket, 200, Regexp.last_match(1))
+      when "/user-agent"
+        handle_user_agent(socket, request[:headers])
+      else
+        send_response(socket, 404, "Not Found")
+      end
+
+    when "POST"
+      if path.match(%r{^/files/(.+)})
+        file_name = Regexp.last_match(1)
+        save_file(socket, file_name, request[:body])
+      else
+        send_response(socket, 404, "Not Found")
+      end
     else
-      send_response(socket, 404, "Not Found")
+      send_response(socket, 405, "Method Not Allowed")
     end
   end
 
@@ -87,6 +106,18 @@ class FileServer
       send_response(socket, 404, "File Not Found")
     end
   end
+
+  def save_file(socket, file_name, body)
+    file_path = File.join(@directory, file_name)
+
+    if body.nil? || body.empty?
+      send_response(socket, 400, "Bad Request: Empty Body")
+    else
+      File.write(file_path, body)
+      send_response(socket, 201, "File created at #{file_path}")
+    end
+  end
+             
 
   def handle_user_agent(socket, headers)
     user_agent_header = headers.find { |header| header.start_with?("User-Agent:") }
@@ -110,6 +141,7 @@ class FileServer
   def status_message(code)
     case code
     when 200 then "OK"
+    when 201 then "Created"
     when 400 then "Bad Request"
     when 404 then "Not Found"
     else "Internal Server Error"
